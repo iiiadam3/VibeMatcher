@@ -19,7 +19,7 @@ st.markdown("""
 @st.cache_data
 def load_data():
     tracks = pd.read_csv('tracks.zip')
-    artists = pd.read_csv('artists.csv')
+    artists = pd.read_csv('artists.zip')
 
     tracks['artist_id'] = tracks['id_artists'].str.replace(r"[\[\]\']", "", regex=True).str.split(',').str[
         0].str.strip()
