@@ -1,0 +1,6 @@
+.venv/
+.venv1/
+.idea/
+.cache/
+__pycache__/
+tracks.csv
