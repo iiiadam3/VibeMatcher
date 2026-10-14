@@ -1,4 +1,4 @@
-# 🎵 VibeMatcher Pro
+# 🎵 VibeMatcher
 
 VibeMatcher is a data-driven, cross-genre music recommendation engine built with Python. Instead of relying on traditional metadata (like genres or artists), it uses acoustic feature analysis to find songs with a mathematically similar "vibe" across completely different musical categories.
 
@@ -35,7 +35,7 @@ VibeMatcher is a data-driven, cross-genre music recommendation engine built with
 
 4. **Run the application:**
    ```bash
-   streamlit run Spotify.py
+   streamlit run SpotifyVibeMatcher.py
    ```
 
 ## 🧠 The Algorithm
