@@ -8,6 +8,8 @@ VibeMatcher is a data-driven, cross-genre music recommendation engine built with
 * **Interactive UI:** Built with Streamlit, offering a smooth, localized (RTL) user experience with a "Random" discovery feature.
 * **Spotify Integration:** Embeds interactive Spotify web players directly into the search results using dynamic iframes.
 
+![VibeMatcher Screenshot](app_screenshot.png)
+
 ## 🛠️ Tech Stack
 * **Language:** Python 3.x
 * **Data Processing:** Pandas, NumPy
