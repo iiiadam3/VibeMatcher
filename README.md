@@ -1,35 +1,42 @@
 # 🎵 VibeMatcher Pro
 
-A machine learning-based music recommendation engine built with Python and Streamlit. 
+VibeMatcher is a data-driven, cross-genre music recommendation engine built with Python. Instead of relying on traditional metadata (like genres or artists), it uses acoustic feature analysis to find songs with a mathematically similar "vibe" across completely different musical categories.
 
-Unlike traditional recommendation systems that rely solely on genres or collaborative filtering, VibeMatcher analyzes the **acoustic DNA** of tracks (such as BPM, energy, danceability, and acousticness) to find mathematical similarities and suggest songs that share the exact same "vibe".
-
-## ✨ Features
-* **Acoustic Feature Analysis:** Uses K-Nearest Neighbors (KNN) logic to calculate vector distances between tracks based on their core audio features.
-* **Smart Genre Mapping & Pre-Filtering:** Implements a custom waterfall algorithm and substring-matching pre-filters to clean, group, and normalize thousands of messy Spotify genres into accurate, user-friendly categories.
-* **BPM Normalization:** Features tempo integration for highly accurate rhythm matching without skewing the mathematical distance.
-* **Smart Filtering:** Automatically removes source-song duplicates (like remasters or alternative versions) from the recommendation list.
-* **Interactive UI:** A clean, responsive Right-To-Left (RTL) interface built with Streamlit, complete with embedded Spotify web players.
+## 🚀 Features
+* **Acoustic DNA Matching:** Utilizes a custom K-Nearest Neighbors (KNN) logic to calculate the weighted Euclidean distance between tracks based on 7 audio features (Danceability, Energy, Valence, Acousticness, Instrumentalness, Speechiness, and Tempo).
+* **Smart Data Pipeline:** Efficiently loads and preprocesses a compressed dataset of over 600,000 Spotify tracks and artists using Pandas, including dynamic text cleaning and genre mapping.
+* **Interactive UI:** Built with Streamlit, offering a smooth, localized (RTL) user experience with a "Random" discovery feature.
+* **Spotify Integration:** Embeds interactive Spotify web players directly into the search results using dynamic iframes.
 
 ## 🛠️ Tech Stack
-* **Python** (Core Logic)
-* **Pandas & NumPy** (Data Engineering, Data Wrangling & Vector Math)
-* **Streamlit** (Frontend Web UI)
+* **Language:** Python 3.x
+* **Data Processing:** Pandas, NumPy
+* **Frontend/UI:** Streamlit
+* **Algorithms:** Vector Mathematics, K-Nearest Neighbors (Custom Implementation)
 
-## ⚙️ How It Works
-1. Enter a song you like.
-2. Select a target genre (or let the system surprise you with the "Random" option).
-3. The engine vectorizes the source song's acoustic traits and searches the target genre for the closest mathematical neighbors.
-4. Discover 5 new tracks that match your exact vibe, playable directly from the browser.
+## 📦 How to Run Locally
 
-## 📊 Data Source & Limitations
-Please note that this application runs on a static, pre-processed dataset (provided via CSV files: `tracks.csv` and `artists.csv`) containing a specific subset of tracks and artists. 
-
-It does **not** connect to the live Spotify API to fetch real-time releases or the entire Spotify library. If a specific song is not present in the underlying CSV dataset, the engine will gracefully notify the user that the track cannot be found.
-
-## 🚀 How to Run Locally
-1. Clone this repository to your local machine.
-2. Ensure you have the datasets (`tracks.csv` and `artists.csv`) in the same directory.
-3. Install the required dependencies:
+1. **Clone the repository:**
    ```bash
-   pip install streamlit pandas numpy
+   git clone https://github.com/YourUsername/VibeMatcher.git
+   cd VibeMatcher
+   ```
+
+2. **Create a virtual environment and activate it:**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
+   ```
+
+3. **Install the dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Run the application:**
+   ```bash
+   streamlit run Spotify.py
+   ```
+
+## 🧠 The Algorithm
+The core of VibeMatcher lies in its custom feature weighting. The algorithm prioritizes certain acoustic properties (like Acousticness and Speechiness) by applying a NumPy weight array before calculating the Euclidean distance. This ensures that the structural "feel" of a track is preserved even when hopping from Rap to Heavy Metal.
