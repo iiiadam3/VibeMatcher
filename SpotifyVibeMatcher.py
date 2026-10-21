@@ -15,7 +15,6 @@ st.markdown("""
 
 
 # --- 2. מודול עיבוד נתונים (Data Pipeline) ---
-# --- 2. מודול עיבוד נתונים (Data Pipeline) ---
 @st.cache_data
 def load_data():
     tracks = pd.read_csv('tracks.zip')
@@ -173,6 +172,6 @@ def main():
                             st.iframe(embed_code, height=90)
 
 
-# נקודת הכניסה של התוכנית (Entry Point)
+
 if __name__ == "__main__":
     main()

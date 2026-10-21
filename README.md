@@ -20,7 +20,7 @@ VibeMatcher is a data-driven, cross-genre music recommendation engine built with
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/YourUsername/VibeMatcher.git
+   git clone https://github.com/iiiadam3/VibeMatcher.git
    cd VibeMatcher
    ```
 
