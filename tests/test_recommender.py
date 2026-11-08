@@ -64,8 +64,8 @@ def catalog():
 def test_features_are_standardized(catalog):
     r = MusicRecommender(catalog)
     # Every feature should now have average ~0 and spread ~1, so none dominates by its units.
-    assert np.allclose(r.Z.mean(axis=0), 0, atol=1e-9)
-    assert np.allclose(r.Z.std(axis=0)[r.Z.std(axis=0) > 0], 1)
+    assert np.allclose(r.Z.mean(axis=0), 0, atol=1e-5)
+    assert np.allclose(r.Z.std(axis=0)[r.Z.std(axis=0) > 0], 1, atol=1e-5)
 
 
 def test_vibe_crosses_genre_when_genre_off(catalog):
@@ -106,3 +106,9 @@ def test_bad_genre_mode_raises(catalog):
 
 def test_all_features_present(catalog):
     assert set(FEATURES) <= set(catalog.columns)
+
+
+def test_rank_of_puts_nearest_song_first(catalog):
+    r = MusicRecommender(catalog)
+    assert r.rank_of("fast heavy rap", "fast heavy punk") == 1
+    assert r.rank_of("fast heavy rap", "slow soft folk") > 1

@@ -16,14 +16,9 @@ st.markdown("""
 from recommender import MusicRecommender, load_data as _load_data
 
 
-@st.cache_data
-def load_data():
-    return _load_data()
-
-
-@st.cache_resource
+@st.cache_resource  # one shared copy for all users (cache_data would copy 575k rows on every click)
 def get_recommender():
-    return MusicRecommender(load_data())
+    return MusicRecommender(_load_data())
 
 
 GENRE_MODE_LABELS = {
@@ -35,12 +30,12 @@ GENRE_MODE_LABELS = {
 
 # --- 3. שכבת הממשק (UI / Presentation) ---
 def main():
-    df = load_data()
+    recommender = get_recommender()
+    df = recommender.df
     if df.empty:
         st.error("שגיאה בטעינת הנתונים.")
         return
 
-    recommender = get_recommender()
     all_genres = df['genres_list'].explode().value_counts()
     popular_genres = sorted(all_genres[all_genres > 100].index.tolist())
     options_list = ["🎲 Random (הפתיעו אותי)"] + popular_genres
