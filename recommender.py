@@ -117,23 +117,31 @@ def main_genres(genre_str):
 # 3. Data loading
 # ---------------------------------------------------------------------------
 def load_data(tracks_path="tracks.zip", artists_path="artists.zip"):
-    tracks = pd.read_csv(tracks_path)
-    artists = pd.read_csv(artists_path)
+    """Load only the columns the app uses, to stay inside Streamlit Cloud's memory limit."""
+    tracks = pd.read_csv(
+        tracks_path,
+        usecols=["id", "name", "artists", "id_artists", "popularity", "release_date", *FEATURES],
+    )
+    artists = pd.read_csv(artists_path, usecols=["id", "genres"])
 
     # Genres in this dataset belong to ARTISTS, not songs. We use the first artist.
     tracks["artist_id"] = (
         tracks["id_artists"].str.replace(r"[\[\]\']", "", regex=True).str.split(",").str[0].str.strip()
     )
-    df = tracks.merge(
-        artists[["id", "genres"]].rename(columns={"id": "artist_key"}),
-        left_on="artist_id", right_on="artist_key", how="left",
+    df = tracks.drop(columns="id_artists").merge(
+        artists.rename(columns={"id": "artist_id"}), on="artist_id", how="left"
     )
+    del tracks, artists
     df = df.dropna(subset=["name", "artists", "genres"])
     df = df[df["tempo"] > 0]  # tempo 0 = broken measurement
 
-    df["genres_list"] = df["genres"].apply(main_genres)
+    # Many songs share an artist, so parse each distinct genre string only once.
+    unique_genres = df["genres"].unique()
+    parsed = dict(zip(unique_genres, map(main_genres, unique_genres)))
+    df["genres_list"] = df["genres"].map(parsed)
     df["search_col"] = df["name"].str.lower() + " " + df["artists"].str.lower()
-    return df.reset_index(drop=True)
+    df[FEATURES] = df[FEATURES].astype("float32")
+    return df.drop(columns=["genres", "artist_id"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -148,15 +156,18 @@ class MusicRecommender:
         # Standardize: (value - average) / spread, per feature.
         # Afterwards every feature has average 0 and spread 1, so tempo (50-220)
         # and energy (0-1) are on the same footing.
-        X = self.df[FEATURES].to_numpy(dtype=float)
+        X = self.df[FEATURES].to_numpy(dtype="float64")
         self.mean = X.mean(axis=0)
         self.std = X.std(axis=0)
         self.std[self.std < 1e-12] = 1.0  # a feature that never changes can't separate songs; avoid dividing by 0
-        self.Z = (X - self.mean) / self.std
+        self.Z = ((X - self.mean) / self.std).astype("float32")
+        self._genre_cache = {}
 
     def find_song(self, query):
         """Return the row index of the best match for a search, or None.
         If several versions match, take the most popular one (usually the original)."""
+        if not query or not query.strip():
+            return None  # an empty search would match every song
         mask = np.ones(len(self.df), dtype=bool)
         for word in query.lower().split():
             mask &= self.df["search_col"].str.contains(word, regex=False, na=False).to_numpy()
@@ -170,6 +181,28 @@ class MusicRecommender:
         diff = (self.Z - self.Z[source_idx]) * self.weights
         return np.sqrt((diff ** 2).sum(axis=1))
 
+    def in_genre(self, genre):
+        """True/False per song: is `genre` one of its main genres? Cached per genre."""
+        if genre not in self._genre_cache:
+            self._genre_cache[genre] = self.df["genres_list"].map(lambda g: genre in g).to_numpy()
+        return self._genre_cache[genre]
+
+    def _scored(self, src, target_genre, genre_mode):
+        """Distance to every song after applying the genre mode (inf = excluded)."""
+        if genre_mode not in GENRE_MODES:
+            raise ValueError(f"genre_mode must be one of {GENRE_MODES}")
+        dist = self.distances(src)
+        if target_genre and genre_mode != "off":
+            in_g = self.in_genre(target_genre)
+            if genre_mode == "strict":
+                dist = np.where(in_g, dist, np.inf)
+            else:
+                dist = dist + np.where(in_g, 0.0, SOFT_GENRE_PENALTY)
+        # Drop the source song itself (all its versions).
+        same = (self.df["artists"].to_numpy() == self.df.at[src, "artists"]) & (
+            self.df["name"].str.lower().to_numpy() == self.df.at[src, "name"].lower())
+        return np.where(same, np.inf, dist)
+
     def recommend(self, query, target_genre=None, genre_mode="soft", n=5):
         """
         Returns (results_dataframe, source_song_name) or (None, error_message).
@@ -181,38 +214,85 @@ class MusicRecommender:
         """
         if genre_mode not in GENRE_MODES:
             raise ValueError(f"genre_mode must be one of {GENRE_MODES}")
-
+        if not query or not query.strip():
+            return None, "כתבו שם של שיר (ואפשר גם אמן) כדי שנדע ממה להתחיל."
         src = self.find_song(query)
         if src is None:
             return None, f"לא מצאתי את השיר '{query}' במאגר."
-        source = self.df.loc[src]
 
-        dist = self.distances(src)
-        result = self.df.assign(dist=dist)
-        in_genre = result["genres_list"].apply(lambda g: target_genre in g)
-        result = result.assign(in_target_genre=in_genre)
-
-        if target_genre and genre_mode == "strict":
-            result = result[in_genre]
-        elif target_genre and genre_mode == "soft":
-            result = result.assign(dist=result["dist"] + np.where(in_genre, 0.0, SOFT_GENRE_PENALTY))
-
-        # Drop the source song itself (all its versions) from the results.
-        result = result[~((result["name"].str.lower() == source["name"].lower())
-                          & (result["artists"] == source["artists"]))]
+        dist = self._scored(src, target_genre, genre_mode)
+        # Only build a table for the closest few hundred songs, not all 575k.
+        k = min(len(dist), max(n * 50, 200))
+        top = np.argpartition(dist, k - 1)[:k]
+        top = top[np.isfinite(dist[top])]
+        result = self.df.iloc[top].assign(dist=dist[top])
+        result["in_target_genre"] = self.in_genre(target_genre)[top] if target_genre else True
         result = result.sort_values("dist").drop_duplicates(subset=["name", "artists"]).head(n)
 
         if result.empty:
             return None, f"לא מצאתי מספיק שירים בז'אנר {target_genre}."
-        return result, source["name"]
+        return result, self.df.loc[src]
 
     def rank_of(self, query_a, query_b, target_genre=None, genre_mode="off"):
         """Where does song B land in song A's results? (1 = top). Used by the golden-pair tests."""
         a, b = self.find_song(query_a), self.find_song(query_b)
         if a is None or b is None:
             return None
-        res, _ = self.recommend(query_a, target_genre, genre_mode, n=len(self.df))
-        b_row = self.df.loc[b]
-        hits = np.flatnonzero((res["name"] == b_row["name"]).to_numpy()
-                              & (res["artists"] == b_row["artists"]).to_numpy())
-        return int(hits[0]) + 1 if len(hits) else None
+        dist = self._scored(a, target_genre, genre_mode)
+        # Song B may exist in several versions; use whichever version is closest.
+        same_b = ((self.df["name"] == self.df.at[b, "name"]) & (self.df["artists"] == self.df.at[b, "artists"])).to_numpy()
+        best_b = dist[same_b].min()
+        if not np.isfinite(best_b):
+            return None
+        closer = self.df.loc[dist < best_b, ["name", "artists"]].drop_duplicates()
+        return len(closer) + 1
+
+
+# ---------------------------------------------------------------------------
+# 5. Explaining results to the user
+# ---------------------------------------------------------------------------
+def artist_names(artists_str):
+    """"['Justin Bieber', 'Giveon']" -> "Justin Bieber, Giveon"."""
+    try:
+        return ", ".join(ast.literal_eval(artists_str))
+    except (ValueError, SyntaxError):
+        return str(artists_str)
+
+
+def song_label(row):
+    """'Arctic Monkeys – Do I Wanna Know? (2013)'"""
+    year = str(row.get("release_date", ""))[:4]
+    return f"{artist_names(row['artists'])} – {row['name']}" + (f" ({year})" if year.isdigit() else "")
+
+
+def _compare(diff, close, same, more, less):
+    if abs(diff) <= close:
+        return same
+    return more if diff > 0 else less
+
+
+def explain(source, match):
+    """Short Hebrew reasons comparing a match to the source song, e.g. 'קצב דומה (86 מול 85 BPM)'."""
+    t_s, t_m = round(source["tempo"]), round(match["tempo"])
+    return [
+        _compare(t_m - t_s, 8, f"קצב דומה ({t_m} מול {t_s} BPM)",
+                 f"מהיר יותר ({t_m} מול {t_s} BPM)", f"איטי יותר ({t_m} מול {t_s} BPM)"),
+        _compare(match["energy"] - source["energy"], 0.1, "אנרגיה דומה", "יותר אנרגטי", "רגוע יותר"),
+        _compare(match["loudness"] - source["loudness"], 2.0, "עוצמה דומה", "חזק יותר", "שקט יותר"),
+        _compare(match["valence"] - source["valence"], 0.12, "מצב רוח דומה", "שמח יותר", "אפל יותר"),
+    ]
+
+
+def _scale(value, low, high):
+    return float(min(max((value - low) / (high - low), 0.0), 1.0))
+
+
+def profile(row):
+    """Values for the song-profile bars: (label, 0-1 bar value, text shown next to it)."""
+    return [
+        ("קצב", _scale(row["tempo"], 60, 200), f"{round(row['tempo'])} BPM"),
+        ("אנרגיה", float(row["energy"]), f"{row['energy']:.0%}"),
+        ("עוצמה", _scale(row["loudness"], -26, -2), f"{row['loudness']:.0f} dB"),
+        ("מצב רוח (אפל ← שמח)", float(row["valence"]), f"{row['valence']:.0%}"),
+        ("רקידות", float(row["danceability"]), f"{row['danceability']:.0%}"),
+    ]
