@@ -23,6 +23,7 @@ where it stopped, because every row is written as soon as it arrives.
 import argparse
 import csv
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,38 @@ MIN_TAG_COUNT = 10
 MAX_TAGS = 10
 
 TAG_SEPARATOR = "|"
+
+
+# Words that mark "this part of the title is not the song's real name".
+# Last.fm lists a song once, so "Burning Down the House - 2005 Remaster" finds nothing.
+NOISE_WORDS = (r"feat|ft|featuring|with|remaster(?:ed)?|version|edit|mix|remix|live|ao vivo|en vivo|"
+               r"mono|stereo|deluxe|bonus|acoustic|demo|radio|single|album|explicit|clean|instrumental|"
+               r"original|extended|reprise|session|recorded|\d{4}")
+_NOISE = re.compile(rf"\b(?:{NOISE_WORDS})\b", re.IGNORECASE)
+_BRACKETS = re.compile(r"\s*[\(\[][^\(\)\[\]]*[\)\]]")
+_FEAT_TAIL = re.compile(r"\s+(?:feat|ft|featuring)\.?\s.*$", re.IGNORECASE)
+
+
+def clean_title(title):
+    """
+    Strip the parts of a song title Last.fm doesn't use.
+
+      "Burning Down the House - 2005 Remaster"  -> "Burning Down the House"
+      "Space Cadet (feat. Gunna)"               -> "Space Cadet"
+      "Empire (Let Them Sing)"                  -> unchanged (the brackets are the real title)
+      "A - Ö"                                   -> unchanged
+    """
+    cleaned = _BRACKETS.sub(lambda m: "" if _NOISE.search(m.group(0)) else m.group(0), str(title))
+    cleaned = _FEAT_TAIL.sub("", cleaned)
+    # "Song - Something": drop the part after the LAST " - " only if it is noise.
+    # Repeat, because titles can stack endings: "Song - Remastered 2011 - Mono".
+    while True:
+        head, sep, tail = cleaned.rpartition(" - ")
+        if not (sep and head.strip() and _NOISE.search(tail)):
+            break
+        cleaned = head
+    cleaned = cleaned.strip()
+    return cleaned or str(title).strip()  # never return an empty title
 
 
 class LastFmClient:
@@ -106,10 +139,19 @@ class LastFmClient:
         return self._artist_cache[artist]
 
     def tags_for(self, artist, track):
-        """Song tags if the song has any, otherwise the artist's. Returns (tags, source)."""
-        tags = self.track_tags(artist, track)
-        if tags:
-            return tags, "track"
+        """
+        Song tags if the song has any, otherwise the artist's. Returns (tags, source).
+
+        Tries the cleaned title first ("Song"), then the title as written in the dataset
+        ("Song - 2005 Remaster"), then falls back to the artist.
+        """
+        names = [clean_title(track)]
+        if names[0] != track:
+            names.append(track)
+        for name in names:
+            tags = self.track_tags(artist, name)
+            if tags:
+                return tags, "track"
         tags = self.artist_tags(artist)
         if tags:
             return tags, "artist"
