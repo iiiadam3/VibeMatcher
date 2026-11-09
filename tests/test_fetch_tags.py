@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from fetch_tags import LastFmClient, already_done, clean_title, fetch_all, load_targets  # noqa: E402
+from fetch_tags import LastFmClient, already_done, clean_title, diagnose, fetch_all, load_targets  # noqa: E402
 
 
 class FakeResponse:
@@ -233,3 +233,88 @@ def test_plain_titles_are_only_asked_once():
     session = FakeSession({})
     client_for(session).tags_for("A", "Plain Title")
     assert [c for c in session.calls if c[0] == "track.getTopTags"] == [("track.getTopTags", "A", "Plain Title")]
+
+
+# ---------------------------------------------------------------------------
+# --diagnose: say WHY a lookup found nothing
+# ---------------------------------------------------------------------------
+KEY = ("track.getTopTags", "A", "B")
+
+
+def verdict_for(payload, status=200):
+    session = FakeSession({KEY: payload}, statuses={KEY: status})
+    return client_for(session).diagnose_track("A", "B")
+
+
+def test_diagnose_ok():
+    verdict, detail = verdict_for(tags_payload(("rock", 100), ("dark", 40)))
+    assert verdict == "OK" and "2 of 2" in detail
+
+
+def test_diagnose_song_not_found():
+    verdict, detail = verdict_for({"error": 6, "message": "Track not found"})
+    assert verdict == "MISS" and "error 6" in detail
+
+
+def test_diagnose_tags_all_below_threshold():
+    verdict, detail = verdict_for(tags_payload(("rock", 7), ("pop", 3)))
+    assert verdict == "FILTERED" and "highest is 7" in detail
+
+
+def test_diagnose_song_exists_without_tags():
+    assert verdict_for({"toptags": {"tag": []}})[0] == "MISS"
+
+
+@pytest.mark.parametrize("payload, status", [
+    ({"error": 29, "message": "Rate limit exceeded"}, 200),
+    ({"error": 29, "message": "Rate limit exceeded"}, 429),
+    ({"error": 10, "message": "Invalid API key"}, 403),
+    (None, 503),
+])
+def test_diagnose_reports_errors_instead_of_hiding_them(payload, status):
+    assert verdict_for(payload, status)[0] == "ERROR"
+
+
+def test_diagnose_prints_a_line_per_song_and_a_summary(tracks_csv):
+    lines = []
+    session = FakeSession({
+        ("track.getTopTags", "Artist A", "Popular"): tags_payload(("rock", 90)),
+        ("track.getTopTags", "Artist C", "Middling"): {"error": 6, "message": "Track not found"},
+    })
+    tally = diagnose(load_targets(tracks_csv, min_popularity=50), client_for(session), 5, log=lines.append)
+    assert tally == {"OK": 1, "MISS": 1}
+    assert any("Artist A - Popular" in line for line in lines) and "Summary" in lines[-1]
+
+
+# ---------------------------------------------------------------------------
+# Temporary Last.fm errors are retried; "not found" is not
+# ---------------------------------------------------------------------------
+class FlakySession:
+    """Fails with a given payload N times, then answers properly."""
+
+    def __init__(self, failures, failing_payload, good_payload):
+        self.failures, self.failing, self.good, self.calls = failures, failing_payload, good_payload, 0
+
+    def get(self, url, params=None, timeout=None):
+        self.calls += 1
+        return FakeResponse(self.failing if self.calls <= self.failures else self.good)
+
+
+def test_rate_limit_error_with_http_200_is_retried(monkeypatch):
+    monkeypatch.setattr("fetch_tags.time.sleep", lambda s: None)
+    session = FlakySession(2, {"error": 29, "message": "Rate limit"}, tags_payload(("rock", 90)))
+    assert client_for(session).track_tags("A", "B") == ["rock"]
+    assert session.calls == 3
+
+
+def test_not_found_is_not_retried():
+    session = FlakySession(99, {"error": 6, "message": "Track not found"}, None)
+    assert client_for(session).track_tags("A", "B") == []
+    assert session.calls == 1
+
+
+def test_diagnose_samples_across_the_list_not_just_the_top(tracks_csv):
+    lines = []
+    diagnose(load_targets(tracks_csv, min_popularity=0), client_for(FakeSession({})), 3, log=lines.append)
+    shown = " ".join(lines)
+    assert "Unknown" in shown or "Middling" in shown  # not only the single most popular song

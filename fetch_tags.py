@@ -45,6 +45,11 @@ MAX_TAGS = 10
 
 TAG_SEPARATOR = "|"
 
+# Last.fm error codes that mean "try again", not "this song does not exist".
+# 8 = operation failed, 11 = service offline, 16 = temporary error, 29 = rate limit exceeded.
+# (6 = "Track not found" is a real answer and is NOT retried.)
+RETRYABLE_ERRORS = {8, 11, 16, 29}
+
 
 # Words that mark "this part of the title is not the song's real name".
 # Last.fm lists a song once, so "Burning Down the House - 2005 Remaster" finds nothing.
@@ -100,9 +105,13 @@ class LastFmClient:
                 continue  # network hiccup: try again
             if response.status_code == 200:
                 try:
-                    return response.json()
+                    payload = response.json()
                 except ValueError:
                     return None
+                if isinstance(payload, dict) and payload.get("error") in RETRYABLE_ERRORS:
+                    time.sleep(2 ** attempt)
+                    continue
+                return payload
             if response.status_code in (429, 500, 502, 503, 504):
                 time.sleep(2 ** attempt)  # wait 1s, then 2s, then 4s
                 continue
@@ -131,6 +140,47 @@ class LastFmClient:
     def track_tags(self, artist, track):
         payload = self._get({"method": "track.getTopTags", "artist": artist, "track": track})
         return self._parse_tags(payload, "toptags")
+
+    def diagnose_track(self, artist, track, min_count=MIN_TAG_COUNT):
+        """
+        One lookup, with the reason spelled out. Used by --diagnose, never by the real run.
+        Returns (verdict, detail) where verdict is OK, FILTERED, MISS or ERROR.
+        """
+        params = {"method": "track.getTopTags", "artist": artist, "track": track,
+                  "api_key": self.api_key, "format": "json", "autocorrect": "1"}
+        if self.sleep_seconds:
+            time.sleep(self.sleep_seconds)
+        try:
+            response = self.session.get(self.base_url, params=params, timeout=15)
+        except requests.RequestException as exc:
+            return "ERROR", f"network problem: {type(exc).__name__}"
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if response.status_code != 200 and not (isinstance(payload, dict) and "error" in payload):
+            return "ERROR", f"HTTP {response.status_code}"
+        if not isinstance(payload, dict):
+            return "ERROR", f"HTTP {response.status_code}, answer was not JSON"
+        if "error" in payload:
+            code = payload.get("error")
+            kind = "ERROR" if code in RETRYABLE_ERRORS or code in (4, 10, 26) else "MISS"
+            return kind, f"HTTP {response.status_code}, Last.fm error {code}: {payload.get('message', '')}"
+        tags = (payload.get("toptags") or {}).get("tag") or []
+        if isinstance(tags, dict):
+            tags = [tags]
+        counts = []
+        for tag in tags:
+            try:
+                counts.append(int(tag.get("count", 0)))
+            except (TypeError, ValueError):
+                counts.append(0)
+        kept = [c for c in counts if c >= min_count]
+        if not counts:
+            return "MISS", "Last.fm knows the song but it has no tags"
+        if not kept:
+            return "FILTERED", f"{len(counts)} tags, all below count {min_count} (highest is {max(counts)})"
+        return "OK", f"{len(kept)} of {len(counts)} tags kept (top counts {counts[:4]})"
 
     def artist_tags(self, artist):
         if artist not in self._artist_cache:
@@ -210,6 +260,24 @@ def fetch_all(targets, client, out_path="tags.csv", progress_every=50, log=print
     return counts
 
 
+def diagnose(targets, client, how_many, log=print):
+    """
+    Print exactly what Last.fm answered for a RANDOM sample of songs, and tally the reasons.
+
+    Random on purpose: the list is sorted by popularity, so its first rows are all brand-new
+    hits, which have had little time to collect tags and would give a misleadingly bad picture.
+    """
+    tally = {}
+    sample = targets.sample(min(how_many, len(targets)), random_state=0)
+    for position, row in enumerate(sample.itertuples(index=False), start=1):
+        sent = clean_title(row.name)
+        verdict, detail = client.diagnose_track(row.artist, sent)
+        tally[verdict] = tally.get(verdict, 0) + 1
+        log(f"{position:>3}. {verdict:<8} {row.artist} - {sent}  ->  {detail}")
+    log("\nSummary: " + ", ".join(f"{k} {v}" for k, v in sorted(tally.items())))
+    return tally
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Download Last.fm tags into tags.csv")
     parser.add_argument("--min-popularity", type=int, default=50,
@@ -219,6 +287,8 @@ def main(argv=None):
     parser.add_argument("--tracks", default="tracks.zip")
     parser.add_argument("--sleep", type=float, default=DEFAULT_SLEEP,
                         help="seconds between requests (default 0.25 = 4 per second)")
+    parser.add_argument("--diagnose", type=int, metavar="N",
+                        help="don't save anything: show what Last.fm answers for the first N songs")
     parser.add_argument("--base-url", default=API_URL, help="override the API address (for testing)")
     args = parser.parse_args(argv)
 
@@ -230,8 +300,11 @@ def main(argv=None):
         return 1
 
     targets = load_targets(args.tracks, args.min_popularity, args.limit)
-    print(f"{len(targets):,} songs to look up. Writing to {args.out}. Ctrl+C is safe.")
     client = LastFmClient(api_key, base_url=args.base_url, sleep_seconds=args.sleep)
+    if args.diagnose:
+        diagnose(targets, client, args.diagnose)
+        return 0
+    print(f"{len(targets):,} songs to look up. Writing to {args.out}. Ctrl+C is safe.")
     try:
         counts = fetch_all(targets, client, args.out)
     except KeyboardInterrupt:
