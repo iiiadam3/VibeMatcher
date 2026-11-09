@@ -5,3 +5,4 @@
 __pycache__/
 tracks.csv
 artists.csv
+.env
