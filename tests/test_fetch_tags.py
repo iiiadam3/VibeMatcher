@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from fetch_tags import LastFmClient, already_done, fetch_all, load_targets  # noqa: E402
+from fetch_tags import LastFmClient, already_done, clean_title, fetch_all, load_targets  # noqa: E402
 
 
 class FakeResponse:
@@ -177,3 +177,59 @@ def test_already_done_handles_a_missing_or_empty_file(tmp_path):
     empty = tmp_path / "empty.csv"
     empty.write_text("")
     assert already_done(empty) == set()
+
+
+# ---------------------------------------------------------------------------
+# Cleaning song titles (real examples from the dataset)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("raw, expected", [
+    ("Burning Down the House - 2005 Remaster", "Burning Down the House"),
+    ("One For Daddy-O - Remastered", "One For Daddy-O"),
+    ("Stay (Remastered 2009)", "Stay"),
+    ("Space Cadet (feat. Gunna)", "Space Cadet"),
+    ("4 Minutes (feat. Justin Timberlake and Timbaland)", "4 Minutes"),
+    ("hole in the bottle (with Shania Twain)", "hole in the bottle"),
+    ("Dices (Remix) [feat. Arcangel & Wisin]", "Dices"),
+    ("Can You Feel It - 7\" Version", "Can You Feel It"),
+    ("Mudou a Estação - Ao Vivo", "Mudou a Estação"),
+    ("Comando X (En Vivo)", "Comando X"),
+    ("Is This Love - Live At The Pavillon De Paris, 1977", "Is This Love"),
+    ("Hey Luv (Anything) (feat. 112)", "Hey Luv (Anything)"),
+    ("Song - Remastered 2011 - Mono", "Song"),
+    ("Sorry Not Sorry feat. Demi", "Sorry Not Sorry"),
+])
+def test_clean_title_removes_noise(raw, expected):
+    assert clean_title(raw) == expected
+
+
+@pytest.mark.parametrize("title", [
+    "Empire (Let Them Sing)",           # brackets are part of the real title
+    "(Our Love) Don't Throw It All Away",
+    "A - Ö",                            # a real title with a dash
+    "Live Forever",                     # 'live' as a word in the title, not a version tag
+    "Mr. Brightside",
+    "1999",
+    "(Live)",                           # cleaning must never leave an empty title
+])
+def test_clean_title_leaves_real_titles_alone(title):
+    assert clean_title(title) == title
+
+
+def test_cleaned_title_is_tried_before_the_original():
+    cleaned = ("track.getTopTags", "Talking Heads", "Burning Down the House")
+    session = FakeSession({cleaned: tags_payload(("new wave", 90))})
+    tags, source = client_for(session).tags_for("Talking Heads", "Burning Down the House - 2005 Remaster")
+    assert (tags, source) == (["new wave"], "track")
+    assert session.calls == [cleaned]  # found on the first ask, so no second request
+
+
+def test_original_title_is_the_second_chance():
+    original = ("track.getTopTags", "A", "Song (Remix)")
+    session = FakeSession({original: tags_payload(("dance", 70))})
+    assert client_for(session).tags_for("A", "Song (Remix)") == (["dance"], "track")
+
+
+def test_plain_titles_are_only_asked_once():
+    session = FakeSession({})
+    client_for(session).tags_for("A", "Plain Title")
+    assert [c for c in session.calls if c[0] == "track.getTopTags"] == [("track.getTopTags", "A", "Plain Title")]
