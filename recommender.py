@@ -120,7 +120,7 @@ def load_data(tracks_path="tracks.zip", artists_path="artists.zip"):
     """Load only the columns the app uses, to stay inside Streamlit Cloud's memory limit."""
     tracks = pd.read_csv(
         tracks_path,
-        usecols=["id", "name", "artists", "id_artists", "popularity", *FEATURES],
+        usecols=["id", "name", "artists", "id_artists", "popularity", "release_date", *FEATURES],
     )
     artists = pd.read_csv(artists_path, usecols=["id", "genres"])
 
@@ -166,6 +166,8 @@ class MusicRecommender:
     def find_song(self, query):
         """Return the row index of the best match for a search, or None.
         If several versions match, take the most popular one (usually the original)."""
+        if not query or not query.strip():
+            return None  # an empty search would match every song
         mask = np.ones(len(self.df), dtype=bool)
         for word in query.lower().split():
             mask &= self.df["search_col"].str.contains(word, regex=False, na=False).to_numpy()
@@ -212,6 +214,8 @@ class MusicRecommender:
         """
         if genre_mode not in GENRE_MODES:
             raise ValueError(f"genre_mode must be one of {GENRE_MODES}")
+        if not query or not query.strip():
+            return None, "כתבו שם של שיר (ואפשר גם אמן) כדי שנדע ממה להתחיל."
         src = self.find_song(query)
         if src is None:
             return None, f"לא מצאתי את השיר '{query}' במאגר."
@@ -227,7 +231,7 @@ class MusicRecommender:
 
         if result.empty:
             return None, f"לא מצאתי מספיק שירים בז'אנר {target_genre}."
-        return result, self.df.at[src, "name"]
+        return result, self.df.loc[src]
 
     def rank_of(self, query_a, query_b, target_genre=None, genre_mode="off"):
         """Where does song B land in song A's results? (1 = top). Used by the golden-pair tests."""
@@ -242,3 +246,53 @@ class MusicRecommender:
             return None
         closer = self.df.loc[dist < best_b, ["name", "artists"]].drop_duplicates()
         return len(closer) + 1
+
+
+# ---------------------------------------------------------------------------
+# 5. Explaining results to the user
+# ---------------------------------------------------------------------------
+def artist_names(artists_str):
+    """"['Justin Bieber', 'Giveon']" -> "Justin Bieber, Giveon"."""
+    try:
+        return ", ".join(ast.literal_eval(artists_str))
+    except (ValueError, SyntaxError):
+        return str(artists_str)
+
+
+def song_label(row):
+    """'Arctic Monkeys – Do I Wanna Know? (2013)'"""
+    year = str(row.get("release_date", ""))[:4]
+    return f"{artist_names(row['artists'])} – {row['name']}" + (f" ({year})" if year.isdigit() else "")
+
+
+def _compare(diff, close, same, more, less):
+    if abs(diff) <= close:
+        return same
+    return more if diff > 0 else less
+
+
+def explain(source, match):
+    """Short Hebrew reasons comparing a match to the source song, e.g. 'קצב דומה (86 מול 85 BPM)'."""
+    t_s, t_m = round(source["tempo"]), round(match["tempo"])
+    return [
+        _compare(t_m - t_s, 8, f"קצב דומה ({t_m} מול {t_s} BPM)",
+                 f"מהיר יותר ({t_m} מול {t_s} BPM)", f"איטי יותר ({t_m} מול {t_s} BPM)"),
+        _compare(match["energy"] - source["energy"], 0.1, "אנרגיה דומה", "יותר אנרגטי", "רגוע יותר"),
+        _compare(match["loudness"] - source["loudness"], 2.0, "עוצמה דומה", "חזק יותר", "שקט יותר"),
+        _compare(match["valence"] - source["valence"], 0.12, "מצב רוח דומה", "שמח יותר", "אפל יותר"),
+    ]
+
+
+def _scale(value, low, high):
+    return float(min(max((value - low) / (high - low), 0.0), 1.0))
+
+
+def profile(row):
+    """Values for the song-profile bars: (label, 0-1 bar value, text shown next to it)."""
+    return [
+        ("קצב", _scale(row["tempo"], 60, 200), f"{round(row['tempo'])} BPM"),
+        ("אנרגיה", float(row["energy"]), f"{row['energy']:.0%}"),
+        ("עוצמה", _scale(row["loudness"], -26, -2), f"{row['loudness']:.0f} dB"),
+        ("מצב רוח (אפל ← שמח)", float(row["valence"]), f"{row['valence']:.0%}"),
+        ("רקידות", float(row["danceability"]), f"{row['danceability']:.0%}"),
+    ]

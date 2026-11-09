@@ -112,3 +112,39 @@ def test_rank_of_puts_nearest_song_first(catalog):
     r = MusicRecommender(catalog)
     assert r.rank_of("fast heavy rap", "fast heavy punk") == 1
     assert r.rank_of("fast heavy rap", "slow soft folk") > 1
+
+
+# ---------------------------------------------------------------------------
+# Empty search and explanations
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("query", ["", "   ", None])
+def test_empty_search_returns_message_not_random_song(catalog, query):
+    res, msg = MusicRecommender(catalog).recommend(query)
+    assert res is None and "כתבו" in msg
+
+
+def test_recommend_returns_source_row(catalog):
+    _, source = MusicRecommender(catalog).recommend("medium pop", genre_mode="off")
+    assert source["name"] == "medium pop"
+
+
+def test_artist_names_and_label():
+    from recommender import artist_names, song_label
+    assert artist_names("['Justin Bieber', 'Giveon']") == "Justin Bieber, Giveon"
+    row = {"name": "Do I Wanna Know?", "artists": "['Arctic Monkeys']", "release_date": "2013-06-18"}
+    assert song_label(row) == "Arctic Monkeys – Do I Wanna Know? (2013)"
+
+
+def test_explain_compares_tempo_and_mood():
+    from recommender import explain
+    src = {"tempo": 85, "energy": 0.5, "loudness": -8, "valence": 0.6}
+    match = {"tempo": 86, "energy": 0.9, "loudness": -8.5, "valence": 0.2}
+    reasons = explain(src, match)
+    assert reasons[0] == "קצב דומה (86 מול 85 BPM)"
+    assert "יותר אנרגטי" in reasons and "אפל יותר" in reasons
+
+
+def test_profile_bars_stay_between_0_and_1():
+    from recommender import profile
+    extreme = {"tempo": 300, "energy": 1.0, "loudness": -60, "valence": 0.0, "danceability": 0.5}
+    assert all(0.0 <= v <= 1.0 for _, v, _ in profile(extreme))
