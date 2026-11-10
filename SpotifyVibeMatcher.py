@@ -1,6 +1,10 @@
-import streamlit as st
-import pandas as pd
+import hashlib
+import importlib
+import pathlib
 import random
+
+import pandas as pd
+import streamlit as st
 
 # --- 1. עיצוב וקונפיגורציה ---
 st.set_page_config(page_title="VibeMatcher Pro", layout="wide")
@@ -20,11 +24,30 @@ st.markdown("""
 
 
 # --- 2. Data + recommender live in recommender.py (testable without Streamlit) ---
-from recommender import MusicRecommender, artist_names, explain, load_data as _load_data, profile, song_label
+#
+# Streamlit Cloud usually deploys by re-running this file without restarting the
+# process ("Pulling code changes... Updated app!" with no "Stopping..."). Python
+# keeps an imported module in memory for the life of the process, so this file
+# would be the new version while recommender stayed the old one, and the app died
+# on a name or an argument that only the new version has.
+#
+# Reloading it explicitly, and keying the cached object on the file's contents,
+# makes a deploy pick up both halves together.
+import recommender as _recommender
+
+_RECOMMENDER_VERSION = hashlib.sha256(
+    pathlib.Path(_recommender.__file__).read_bytes()).hexdigest()[:12]
+importlib.reload(_recommender)
+
+from recommender import (  # noqa: E402  (must follow the reload above)
+    MusicRecommender, artist_names, explain, load_data as _load_data, profile, song_label,
+)
 
 
 @st.cache_resource  # one shared copy for all users (cache_data would copy 575k rows on every click)
-def get_recommender():
+def get_recommender(version):
+    """`version` is unused inside, but changing it makes Streamlit build a fresh
+    recommender instead of handing back one built from the previous deploy's code."""
     return MusicRecommender(_load_data())
 
 
@@ -61,7 +84,7 @@ def genre_text(row):
 
 # --- 3. שכבת הממשק (UI / Presentation) ---
 def main():
-    recommender = get_recommender()
+    recommender = get_recommender(_RECOMMENDER_VERSION)
     df = recommender.df
     if df.empty:
         st.error("שגיאה בטעינת הנתונים.")
