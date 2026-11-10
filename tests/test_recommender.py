@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from recommender import FEATURES, MusicRecommender, main_genres  # noqa: E402
+from recommender import FEATURES, MusicRecommender, main_genres, norm_title  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -40,12 +40,15 @@ def test_bad_genre_string_is_other():
 # ---------------------------------------------------------------------------
 # Recommender on a tiny catalog
 # ---------------------------------------------------------------------------
-def make_song(name, artist, genre, **features):
+def make_song(name, artist, genre, popularity=50, **features):
     base = {"tempo": 120.0, "energy": 0.5, "loudness": -8.0, "danceability": 0.5,
             "valence": 0.5, "acousticness": 0.5, "instrumentalness": 0.0, "speechiness": 0.1}
     base.update(features)
-    return {"id": name, "name": name, "artists": f"['{artist}']", "genres_list": [genre],
-            "popularity": 50, "search_col": f"{name} {artist}".lower(), **base}
+    from recommender import norm_title as _n
+    row = {"id": name, "name": name, "artists": f"['{artist}']", "genres_list": [genre],
+           "popularity": popularity, "search_col": f"{name} {artist}".lower(),
+           "norm_name": _n(name), **base}
+    return row
 
 
 @pytest.fixture
@@ -148,3 +151,57 @@ def test_profile_bars_stay_between_0_and_1():
     from recommender import profile
     extreme = {"tempo": 300, "energy": 1.0, "loudness": -60, "valence": 0.0, "danceability": 0.5}
     assert all(0.0 <= v <= 1.0 for _, v, _ in profile(extreme))
+
+
+# ---------------------------------------------------------------------------
+# Same song spelled two ways (curly vs straight apostrophe)
+# ---------------------------------------------------------------------------
+def test_norm_title_matches_curly_and_straight_apostrophes():
+    assert norm_title("What\u2019s Next") == norm_title("What's Next")
+
+
+def test_norm_title_ignores_case_and_punctuation():
+    assert norm_title("Hello!") == norm_title("hello")
+
+
+def test_norm_title_keeps_different_songs_apart():
+    assert norm_title("Smells Like Teen Spirit") != norm_title("Smells Like Nirvana")
+
+
+def test_the_searched_song_is_not_recommended_back_in_another_spelling(catalog):
+    twin = make_song("medium pop", "E", "Pop", tempo=118, energy=0.6, loudness=-7, acousticness=0.3)
+    twin["name"] = "Medium\u2019 Pop!"
+    twin["id"] = "twin"
+    twin["norm_name"] = norm_title(twin["name"])
+    df = pd.concat([catalog, pd.DataFrame([twin])], ignore_index=True)
+    res, _ = MusicRecommender(df).recommend("medium pop", genre_mode="off", n=5)
+    assert "Medium\u2019 Pop!" not in res["name"].tolist()
+
+
+# ---------------------------------------------------------------------------
+# Popularity floor
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def mixed_popularity():
+    return pd.DataFrame([
+        make_song("the source", "A", "Rap", popularity=80, tempo=150, energy=0.8),
+        make_song("obscure twin", "B", "Rap", popularity=10, tempo=150, energy=0.8),
+        make_song("famous but further", "C", "Rap", popularity=90, tempo=120, energy=0.5),
+    ])
+
+
+def test_popularity_floor_excludes_obscure_songs(mixed_popularity):
+    res, _ = MusicRecommender(mixed_popularity).recommend(
+        "the source", genre_mode="off", n=5, min_popularity=50)
+    assert res["name"].tolist() == ["famous but further"]
+
+
+def test_without_a_floor_the_closest_song_wins(mixed_popularity):
+    res, _ = MusicRecommender(mixed_popularity).recommend("the source", genre_mode="off", n=5)
+    assert res.iloc[0]["name"] == "obscure twin"
+
+
+def test_floor_that_excludes_everything_returns_a_helpful_message(mixed_popularity):
+    res, msg = MusicRecommender(mixed_popularity).recommend(
+        "the source", genre_mode="off", min_popularity=99)
+    assert res is None and "פופולריות" in msg

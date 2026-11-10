@@ -7,7 +7,14 @@ st.set_page_config(page_title="VibeMatcher Pro", layout="wide")
 st.markdown("""
 <style>
     .stApp { direction: rtl; }
-    div[data-testid="stMarkdownContainer"] p, h1, h2, h3 { text-align: right; }
+    div[data-testid="stMarkdownContainer"] p,
+    div[data-testid="stMarkdownContainer"] li,
+    div[data-testid="stMarkdownContainer"] ol,
+    div[data-testid="stMarkdownContainer"] ul,
+    h1, h2, h3 { text-align: right; }
+    /* in RTL the list marker sits on the right, so the indent has to move with it */
+    div[data-testid="stMarkdownContainer"] ol,
+    div[data-testid="stMarkdownContainer"] ul { padding-right: 1.6rem; padding-left: 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -29,15 +36,15 @@ GENRE_MODE_LABELS = {
 
 
 RANDOM_OPTION = "🎲 Random (הפתיעו אותי)"
-EXAMPLE = {"song": "Magnolia Playboi Carti", "genre": "Metal", "mode": "soft"}
 
-
-def load_example():
-    """Runs when the example button is clicked, before the widgets are drawn again."""
-    st.session_state["song"] = EXAMPLE["song"]
-    st.session_state["genre"] = EXAMPLE["genre"]
-    st.session_state["mode"] = EXAMPLE["mode"]
-    st.session_state["auto_search"] = True
+# How well known the recommendations must be. Obscure tracks hugely outnumber famous
+# ones, so without a floor the closest matches are almost always unknown songs.
+POPULARITY_LEVELS = {
+    "להיטים בלבד": 65,
+    "מוכרים (מומלץ)": 50,
+    "כולל פחות מוכרים": 35,
+    "הכל, גם שירים נדירים": 0,
+}
 
 
 def show_profile(row):
@@ -76,7 +83,6 @@ def main():
     2. בחרו באיזה ז'אנר תרצו המלצות
     3. קבלו חמישה שירים עם אותו וייב, ולכל אחד הסבר למה הוא נבחר 🎶
     """)
-    st.button(f"✨ נסו דוגמה: Playboi Carti – Magnolia ← {EXAMPLE['genre']}", on_click=load_example)
     st.markdown("---")
 
     st.session_state.setdefault("song", "Do I Wanna Know Arctic Monkeys")
@@ -89,10 +95,12 @@ def main():
     with col3:
         genre_mode = st.radio("כמה להקפיד על הז'אנר?", list(GENRE_MODE_LABELS),
                               format_func=GENRE_MODE_LABELS.get, key="mode")
+    popularity_label = st.columns(3)[0].selectbox(
+        "כמה מוכרים השירים שתקבלו?", list(POPULARITY_LEVELS), index=1, key="popularity")
+    min_popularity = POPULARITY_LEVELS[popularity_label]
     st.caption("ℹ️ תגיות הז'אנר במאגר שייכות לאמן ולא לשיר, ולכן הן משוערות.")
 
-    clicked = st.button("מצא לי מוזיקה", type="primary")
-    if not (clicked or st.session_state.pop("auto_search", False)):
+    if not st.button("מצא לי מוזיקה", type="primary"):
         return
 
     if not song_input.strip():
@@ -104,7 +112,8 @@ def main():
         st.info(f"🎲 נבחר עבורך הז'אנר: **{actual_genre}**")
 
     with st.spinner('מנתח את ה-Vibe...'):
-        matches, source = recommender.recommend(song_input, actual_genre, genre_mode)
+        matches, source = recommender.recommend(
+            song_input, actual_genre, genre_mode, min_popularity=min_popularity)
 
     if matches is None:
         st.error(source)
