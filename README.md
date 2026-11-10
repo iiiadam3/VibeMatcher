@@ -4,7 +4,8 @@ Find songs that *feel* like a song you love, even when they come from a complete
 
 **Live app:** [vibematcheralgo.streamlit.app](https://vibematcheralgo.streamlit.app)
 
-![VibeMatcher Screenshot](app_screenshot.png)
+   ![VibeMatcher Screenshot](app_screenshot.png.png)
+   ![VibeMatcher Screenshot 2](app_screenshot2.png.png)
 
 ## How it works
 
