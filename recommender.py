@@ -4,6 +4,7 @@ VibeMatcher core logic: data loading, genre cleanup, and the recommender.
 Kept separate from the Streamlit UI so it can be tested with pytest.
 """
 import ast
+import re
 from collections import Counter
 
 import numpy as np
@@ -30,9 +31,10 @@ DEFAULT_WEIGHTS = {
     "tempo": 2.0,
     "energy": 2.0,
     "loudness": 1.5,
-    "danceability": 0.5,  # Spotify rates rap as more "danceable" than rock, so this acts like a hidden genre signal
+    "danceability": 0.5,  # includes beat strength, but Spotify rates rap far above rock on it,
+                          # so raising it traps results inside one genre (measured on the golden pairs)
     "valence": 1.0,
-    "acousticness": 1.0,
+    "acousticness": 2.0,   # separates produced/electronic tracks from acoustic ones
     "instrumentalness": 0.5,
     "speechiness": 0.3,
 }
@@ -76,6 +78,20 @@ GENRE_MAPPING = {
     "electro": "Electronic/Dance", "techno": "Electronic/Dance",
     "house": "Electronic/Dance", "edm": "Electronic/Dance",
 }
+
+
+_PUNCTUATION = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def norm_title(title):
+    """
+    A title reduced to letters and digits, for spotting the same song twice.
+
+    The dataset holds both "What's Next" and "What\u2019s Next" (a curly apostrophe)
+    as separate rows, so an exact string comparison treated them as different songs
+    and the search could recommend the very track you asked about.
+    """
+    return _PUNCTUATION.sub("", str(title).replace("\u2019", "'").lower()).strip()
 
 
 def map_tag(tag):
@@ -140,6 +156,7 @@ def load_data(tracks_path="tracks.zip", artists_path="artists.zip"):
     parsed = dict(zip(unique_genres, map(main_genres, unique_genres)))
     df["genres_list"] = df["genres"].map(parsed)
     df["search_col"] = df["name"].str.lower() + " " + df["artists"].str.lower()
+    df["norm_name"] = df["name"].map(norm_title)
     df[FEATURES] = df[FEATURES].astype("float32")
     return df.drop(columns=["genres", "artist_id"]).reset_index(drop=True)
 
@@ -187,8 +204,8 @@ class MusicRecommender:
             self._genre_cache[genre] = self.df["genres_list"].map(lambda g: genre in g).to_numpy()
         return self._genre_cache[genre]
 
-    def _scored(self, src, target_genre, genre_mode):
-        """Distance to every song after applying the genre mode (inf = excluded)."""
+    def _scored(self, src, target_genre, genre_mode, min_popularity=0):
+        """Distance to every song after applying the genre mode and popularity floor (inf = excluded)."""
         if genre_mode not in GENRE_MODES:
             raise ValueError(f"genre_mode must be one of {GENRE_MODES}")
         dist = self.distances(src)
@@ -198,12 +215,16 @@ class MusicRecommender:
                 dist = np.where(in_g, dist, np.inf)
             else:
                 dist = dist + np.where(in_g, 0.0, SOFT_GENRE_PENALTY)
-        # Drop the source song itself (all its versions).
+        if min_popularity:
+            # Obscure tracks vastly outnumber well-known ones, so without this the nearest
+            # neighbours are nearly always songs nobody has heard of.
+            dist = np.where(self.df["popularity"].to_numpy() >= min_popularity, dist, np.inf)
+        # Drop the source song itself, including versions spelled slightly differently.
         same = (self.df["artists"].to_numpy() == self.df.at[src, "artists"]) & (
-            self.df["name"].str.lower().to_numpy() == self.df.at[src, "name"].lower())
+            self.df["norm_name"].to_numpy() == self.df.at[src, "norm_name"])
         return np.where(same, np.inf, dist)
 
-    def recommend(self, query, target_genre=None, genre_mode="soft", n=5):
+    def recommend(self, query, target_genre=None, genre_mode="soft", n=5, min_popularity=0):
         """
         Returns (results_dataframe, source_song_name) or (None, error_message).
 
@@ -211,6 +232,8 @@ class MusicRecommender:
           "off"    - pure vibe, genre ignored
           "soft"   - songs outside target_genre get SOFT_GENRE_PENALTY extra distance
           "strict" - only songs in target_genre
+
+        min_popularity: ignore songs below this Spotify popularity (0-100).
         """
         if genre_mode not in GENRE_MODES:
             raise ValueError(f"genre_mode must be one of {GENRE_MODES}")
@@ -220,17 +243,18 @@ class MusicRecommender:
         if src is None:
             return None, f"לא מצאתי את השיר '{query}' במאגר."
 
-        dist = self._scored(src, target_genre, genre_mode)
+        dist = self._scored(src, target_genre, genre_mode, min_popularity)
         # Only build a table for the closest few hundred songs, not all 575k.
         k = min(len(dist), max(n * 50, 200))
         top = np.argpartition(dist, k - 1)[:k]
         top = top[np.isfinite(dist[top])]
         result = self.df.iloc[top].assign(dist=dist[top])
         result["in_target_genre"] = self.in_genre(target_genre)[top] if target_genre else True
-        result = result.sort_values("dist").drop_duplicates(subset=["name", "artists"]).head(n)
+        result = result.sort_values("dist").drop_duplicates(subset=["norm_name", "artists"]).head(n)
 
         if result.empty:
-            return None, f"לא מצאתי מספיק שירים בז'אנר {target_genre}."
+            return None, ("לא מצאתי מספיק שירים שמתאימים לסינון. "
+                          "נסו להוריד את רמת הפופולריות או לבחור ז'אנר אחר.")
         return result, self.df.loc[src]
 
     def rank_of(self, query_a, query_b, target_genre=None, genre_mode="off"):
@@ -240,11 +264,12 @@ class MusicRecommender:
             return None
         dist = self._scored(a, target_genre, genre_mode)
         # Song B may exist in several versions; use whichever version is closest.
-        same_b = ((self.df["name"] == self.df.at[b, "name"]) & (self.df["artists"] == self.df.at[b, "artists"])).to_numpy()
+        same_b = ((self.df["norm_name"] == self.df.at[b, "norm_name"])
+                  & (self.df["artists"] == self.df.at[b, "artists"])).to_numpy()
         best_b = dist[same_b].min()
         if not np.isfinite(best_b):
             return None
-        closer = self.df.loc[dist < best_b, ["name", "artists"]].drop_duplicates()
+        closer = self.df.loc[dist < best_b, ["norm_name", "artists"]].drop_duplicates()
         return len(closer) + 1
 
 

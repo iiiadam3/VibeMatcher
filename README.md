@@ -11,13 +11,14 @@ Find songs that *feel* like a song you love, even when they come from a complete
 Every song is described by 8 audio features from Spotify's dataset: tempo, energy, loudness, danceability, valence (dark → happy), acousticness, instrumentalness and speechiness. Two songs are "similar" when they are close together in that 8-dimensional space.
 
 1. **Standardize every feature** (z-score). Tempo runs from 50 to 220 while energy runs from 0 to 1, so without this step tempo would drown out everything else. After standardizing, a weight of 2 really means "twice as important".
-2. **Weight the features.** Tempo and energy count most, loudness next. Speechiness and danceability are kept low on purpose, because they work as hidden genre signals (rap scores high on both) and would trap results inside one genre.
+2. **Weight the features.** Tempo, energy and acousticness count most, loudness next. Speechiness and danceability are kept low on purpose, because they work as hidden genre signals (rap scores high on both) and would trap results inside one genre — raising danceability measurably pushed the golden pairs from the top 3.6% to the top 12%.
 3. **Weighted Euclidean distance** from the chosen song to every other song, computed in NumPy.
-4. **Genre mode**, chosen by the user:
+4. **Popularity floor**, chosen by the user. Obscure tracks outnumber well-known ones roughly 7 to 1, so without a floor the nearest neighbours are nearly always songs nobody has heard of. The default keeps songs at Spotify popularity 50 or above (the top 13%).
+5. **Genre mode**, chosen by the user:
    * *Soft* (default): songs outside the target genre get a small distance penalty, so a strong vibe match from another genre can still win.
    * *Strict*: only songs from the target genre.
    * *Off*: vibe only.
-5. **Explain the result.** Each recommendation shows its genre and a comparison with the original (tempo, energy, loudness, mood).
+6. **Explain the result.** Each recommendation shows its genre and a comparison with the original (tempo, energy, loudness, mood).
 
 ### About the genre labels
 
